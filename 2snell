@@ -79,7 +79,6 @@ generate_config() {
 [snell-server]
 listen = 0.0.0.0:$port
 psk = $psk
-obfs = tls
 EOF
     
     echo -e "${GREEN}Snell配置已生成:${NC}"
