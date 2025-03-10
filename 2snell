@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# 检查root权限
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}错误：必须以root用户运行${NC}"
+    exit 1
+fi
+
+# 检查系统
+check_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$NAME
+        VER=$VERSION_ID
+    fi
+    
+    case $OS in
+        "Ubuntu"|"Debian GNU/Linux"|"CentOS Linux"|"AlmaLinux"|"Rocky Linux")
+            echo -e "${GREEN}支持的系统: $OS $VER${NC}"
+            ;;
+        *)
+            echo -e "${RED}不支持的系统: $OS $VER${NC}"
+            exit 1
+            ;;
+    esac
+}
+
+# 安装依赖
+install_dependencies() {
+    echo -e "${YELLOW}安装依赖...${NC}"
+    case $OS in
+        "Ubuntu"|"Debian GNU/Linux")
+            apt update
+            apt install -y wget curl unzip
+            ;;
+        "CentOS Linux"|"AlmaLinux"|"Rocky Linux")
+            yum install -y wget curl unzip
+            ;;
+    esac
+}
+
+# 安装snell
+install_snell() {
+    echo -e "${YELLOW}安装snell...${NC}"
+    SNELL_VERSION=$(curl -s https://api.github.com/repos/surge-networks/snell/releases/latest | grep tag_name | cut -d '"' -f 4)
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            wget https://github.com/surge-networks/snell/releases/download/${SNELL_VERSION}/snell-server-${SNELL_VERSION}-linux-amd64.zip
+            ;;
+        aarch64)
+            wget https://github.com/surge-networks/snell/releases/download/${SNELL_VERSION}/snell-server-${SNELL_VERSION}-linux-aarch64.zip
+            ;;
+        *)
+            echo -e "${RED}不支持的架构: $ARCH${NC}"
+            exit 1
+            ;;
+    esac
+    
+    unzip snell-server-*.zip
+    mv snell-server /usr/local/bin/
+    chmod +x /usr/local/bin/snell-server
+    rm snell-server-*.zip
+}
+
+# 生成配置
+generate_config() {
+    local port=$1
+    local config_file=$2
+    local psk=$(openssl rand -base64 32)
+    
+    cat > $config_file << EOF
+[snell-server]
+listen = 0.0.0.0:$port
+psk = $psk
+obfs = tls
+EOF
+    
+    echo -e "${GREEN}Snell配置已生成:${NC}"
+    echo -e "端口: $port"
+    echo -e "PSK: $psk"
+}
+
+# 创建服务
+create_service() {
+    local service_name=$1
+    local config_file=$2
+    
+    cat > /etc/systemd/system/${service_name}.service << EOF
+[Unit]
+Description=Snell Proxy Service (${service_name})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/snell-server -c $config_file
+Restart=always
+User=nobody
+Group=nogroup
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable ${service_name}
+    systemctl start ${service_name}
+}
+
+# 主函数
+main() {
+    check_os
+    install_dependencies
+    install_snell
+    
+    # 创建第一个snell服务
+    mkdir -p /etc/snell1
+    generate_config 6200 /etc/snell1/snell-server.conf
+    create_service snell1 /etc/snell1/snell-server.conf
+    
+    # 创建第二个snell服务
+    mkdir -p /etc/snell2
+    generate_config 6201 /etc/snell2/snell-server.conf
+    create_service snell2 /etc/snell2/snell-server.conf
+    
+    echo -e "${GREEN}两个Snell服务已安装！${NC}"
+    echo -e "${YELLOW}服务1配置: /etc/snell1/snell-server.conf${NC}"
+    echo -e "${YELLOW}服务2配置: /etc/snell2/snell-server.conf${NC}"
+    echo -e "${YELLOW}管理命令:${NC}"
+    echo -e "systemctl status snell1/snell2"
+    echo -e "systemctl restart snell1/snell2"
+    echo -e "systemctl stop snell1/snell2"
+}
+
+main
